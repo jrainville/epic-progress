@@ -49,12 +49,13 @@ async function getIssueNodeId(owner, repo, number) {
   return repository.issue.id;
 }
 
-async function getProjectStatus(issueId, issueNumber, projectNodeId) {
+async function getProjectStatus(issueId, issueNumber, projectNodeId, milestoneTitle = "") {
   const query = `
     query($issueId: ID!) {
       node(id: $issueId) {
         ... on Issue {
-          projectItems(first: 10) {
+          milestone { title }
+          projectItems(first: 30) {
             nodes {
               project {
                 id
@@ -80,11 +81,22 @@ async function getProjectStatus(issueId, issueNumber, projectNodeId) {
 
   const { node } = await graphqlWithAuth(query, { issueId });
 
-  const items = node?.projectItems?.nodes || [];
+  if (!node) {
+    console.warn(`⚠️ Could not fetch node for issue ${issueNumber}`);
+    return null;
+  }
+
+  const issueMilestone = node.milestone?.title;
+  if (milestoneTitle && issueMilestone !== milestoneTitle) {
+    console.log(`⏭️ Skipping issue #${issueNumber} — not in milestone "${milestoneTitle}" (found: "${issueMilestone || 'none'}")`);
+    return null;
+  }
+
+  const items = node.projectItems?.nodes || [];
   const projectItem = items.find(item => item?.project?.id === projectNodeId);
 
   if (!projectItem) {
-    console.warn(`⚠️ Issue ${issueNumber} is not in Project 65`);
+    console.warn(`⚠️ Issue ${issueNumber} is not in project ${projectNodeId}`);
     return 'unstarted';
   }
 
@@ -92,6 +104,7 @@ async function getProjectStatus(issueId, issueNumber, projectNodeId) {
   const statusField = fieldValues.find(f => f.field?.name === 'Status');
   return statusField?.name?.toLowerCase().trim() || 'unstarted';
 }
+
 
 function normalizeStatus(status) {
   switch (status) {
@@ -106,7 +119,7 @@ function normalizeStatus(status) {
   }
 }
 
-async function gatherStats(owner, repo, issueNumber, projectNodeId, seen = new Set(), isRoot = true) {
+async function gatherStats(owner, repo, issueNumber, projectNodeId, milestoneTitle = "", seen = new Set(), isRoot = true) {
   if (seen.has(issueNumber)) return { done: 0, review: 0, progress: 0, unstarted: 0 };
   seen.add(issueNumber);
 
@@ -115,15 +128,17 @@ async function gatherStats(owner, repo, issueNumber, projectNodeId, seen = new S
   // Only classify status if it's not the root Epic
   if (!isRoot) {
     const issueId = await getIssueNodeId(owner, repo, issueNumber);
-    const rawStatus = await getProjectStatus(issueId, issueNumber, projectNodeId);
-    const status = normalizeStatus(rawStatus);
-    console.log(`Issue #${issueNumber} status: ${status}`);
-    stats[status]++;
+    const rawStatus = await getProjectStatus(issueId, issueNumber, projectNodeId, milestoneTitle);
+    if (!!rawStatus) {
+      const status = normalizeStatus(rawStatus);
+      console.log(`Issue #${issueNumber} status: ${status}`);
+      stats[status]++;
+    }
   }
 
   const subIssues = await getSubIssues(owner, repo, issueNumber);
   for (const sub of subIssues) {
-    const subStats = await gatherStats(owner, repo, sub.number, projectNodeId, seen, false);
+    const subStats = await gatherStats(owner, repo, sub.number, projectNodeId, milestoneTitle, seen, false);
     for (const key of Object.keys(stats)) {
       stats[key] += subStats[key];
     }
@@ -193,7 +208,6 @@ async function getProjectNodeIdFromUrl(url, githubToken) {
     console.error('Usage: node epic-progress.mjs [--project-url <Project URL>] --epic-url <Epic URL>');
     process.exit(1);
   }
-  console.log(args)
 
   const epicUrlArgIndex = args.indexOf('--epic-url');
   if (epicUrlArgIndex === -1 || !args[epicUrlArgIndex + 1]) {
@@ -221,7 +235,14 @@ async function getProjectNodeIdFromUrl(url, githubToken) {
     process.exit(1);
   }
 
+  const milestoneArgIndex = args.indexOf('--milestone');
+  const milestoneTitle = milestoneArgIndex !== -1 ? args[milestoneArgIndex + 1] : null;
+
+  if (!!milestoneTitle) {
+    console.log(`Filtering issues by milestone: "${milestoneTitle}"`);
+  }
+
   const { owner, repo, number } = parseGitHubUrl(epicUrl);
-  const stats = await gatherStats(owner, repo, number, projectNodeId); // pass projectNodeId to allow filtering
+  const stats = await gatherStats(owner, repo, number, projectNodeId, milestoneTitle);
   showProgress(stats);
 })();
