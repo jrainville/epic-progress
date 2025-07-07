@@ -5,22 +5,24 @@ A tool to fetch an Epic's sub-issues and get its progress
 ## Requirements
 
 - NodeJS >18
+- The issues must be associated to a Github Project
 
 ### Configuration
 
 1. `npm install`
 2. Create `.env`
    - `GH_TOKEN=ghp_your_personal_token_here`
+   - The Token needs to have access to the repo permissions
 
 ## Usage
 
 ```terminal
-node epic-progress.js GITHUB_EPIC_URL
+node epic-progress.mjs --project-url <Project URL> --epic-url <Epic URL>
 ```
 
 Example:
 ```
-$ node epic-progress.mjs https://github.com/status-im/status-desktop/issues/17971
+$ node epic-progress.mjs --project-url https://github.com/orgs/status-im/projects/65 --epic-url https://github.com/status-im/status-desktop/issues/17971
 [dotenv@17.0.0] injecting env (1) from .env – 🔐 encrypt with dotenvx: https://dotenvx.com
 Issue #18032 status: done
 Issue #18030 status: done

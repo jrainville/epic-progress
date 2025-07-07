@@ -12,8 +12,6 @@ const graphqlWithAuth = graphql.defaults({
   },
 });
 
-const PROJECT_NODE_ID = 'PVT_kwDOALOQjs4AA2CL'; // Status Desktop/Mobile Board
-
 
 function parseGitHubUrl(url) {
   const match = url.match(/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)/);
@@ -51,7 +49,7 @@ async function getIssueNodeId(owner, repo, number) {
   return repository.issue.id;
 }
 
-async function getProjectStatus(issueId, issueNumber) {
+async function getProjectStatus(issueId, issueNumber, projectNodeId) {
   const query = `
     query($issueId: ID!) {
       node(id: $issueId) {
@@ -83,14 +81,14 @@ async function getProjectStatus(issueId, issueNumber) {
   const { node } = await graphqlWithAuth(query, { issueId });
 
   const items = node?.projectItems?.nodes || [];
-  const project65Item = items.find(item => item?.project?.id === PROJECT_NODE_ID);
+  const projectItem = items.find(item => item?.project?.id === projectNodeId);
 
-  if (!project65Item) {
+  if (!projectItem) {
     console.warn(`⚠️ Issue ${issueNumber} is not in Project 65`);
     return 'unstarted';
   }
 
-  const fieldValues = project65Item.fieldValues.nodes;
+  const fieldValues = projectItem.fieldValues.nodes;
   const statusField = fieldValues.find(f => f.field?.name === 'Status');
   return statusField?.name?.toLowerCase().trim() || 'unstarted';
 }
@@ -108,7 +106,7 @@ function normalizeStatus(status) {
   }
 }
 
-async function gatherStats(owner, repo, issueNumber, seen = new Set(), isRoot = true) {
+async function gatherStats(owner, repo, issueNumber, projectNodeId, seen = new Set(), isRoot = true) {
   if (seen.has(issueNumber)) return { done: 0, review: 0, progress: 0, unstarted: 0 };
   seen.add(issueNumber);
 
@@ -117,7 +115,7 @@ async function gatherStats(owner, repo, issueNumber, seen = new Set(), isRoot = 
   // Only classify status if it's not the root Epic
   if (!isRoot) {
     const issueId = await getIssueNodeId(owner, repo, issueNumber);
-    const rawStatus = await getProjectStatus(issueId, issueNumber);
+    const rawStatus = await getProjectStatus(issueId, issueNumber, projectNodeId);
     const status = normalizeStatus(rawStatus);
     console.log(`Issue #${issueNumber} status: ${status}`);
     stats[status]++;
@@ -125,7 +123,7 @@ async function gatherStats(owner, repo, issueNumber, seen = new Set(), isRoot = 
 
   const subIssues = await getSubIssues(owner, repo, issueNumber);
   for (const sub of subIssues) {
-    const subStats = await gatherStats(owner, repo, sub.number, seen, false);
+    const subStats = await gatherStats(owner, repo, sub.number, projectNodeId, seen, false);
     for (const key of Object.keys(stats)) {
       stats[key] += subStats[key];
     }
@@ -157,14 +155,73 @@ function showProgress(stats) {
   console.log(`Done: ${stats.done}, Code Review: ${stats.review}, In Progress: ${stats.progress}, Not Started: ${stats.unstarted}`);
 }
 
+async function getProjectNodeIdFromUrl(url, githubToken) {
+  const match = url.match(/github\.com\/orgs\/([^/]+)\/projects\/(\d+)/);
+  if (!match) throw new Error("Invalid GitHub Project URL format");
+
+  const [, org, number] = match;
+
+  const query = `
+    query {
+      organization(login: "${org}") {
+        projectV2(number: ${number}) {
+          id
+          title
+        }
+      }
+    }
+  `;
+
+  const response = await fetch("https://api.github.com/graphql", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${githubToken}`,
+    },
+    body: JSON.stringify({ query }),
+  });
+
+  const data = await response.json();
+  return data.data.organization.projectV2.id;
+}
+
+
 (async () => {
-  const url = process.argv[2];
-  if (!url) {
-    console.error('Usage: node epic-progress.mjs <Epic GitHub Issue URL>');
+  const args = process.argv.slice(2);
+
+  if (args.length === 0) {
+    console.error('Usage: node epic-progress.mjs [--project-url <Project URL>] --epic-url <Epic URL>');
+    process.exit(1);
+  }
+  console.log(args)
+
+  const epicUrlArgIndex = args.indexOf('--epic-url');
+  if (epicUrlArgIndex === -1 || !args[epicUrlArgIndex + 1]) {
+    console.error('Epic URL is required. Use --epic-url <Epic URL> to specify it.');
+    process.exit(1);
+  }
+  const epicUrl = args[epicUrlArgIndex + 1];
+
+  const projectUrlArgIndex = args.indexOf('--project-url');
+  if (projectUrlArgIndex === -1 || !args[projectUrlArgIndex + 1]) {
+    console.error('Project URL is required. Use --project-url <Project URL> to specify it.');
     process.exit(1);
   }
 
-  const { owner, repo, number } = parseGitHubUrl(url);
-  const stats = await gatherStats(owner, repo, number);
+  let projectNodeId = null;
+  const projectUrl = args[projectUrlArgIndex + 1];
+  if (!GH_TOKEN) {
+    console.error("GH_TOKEN environment variable is required");
+    process.exit(1);
+  }
+  try {
+    projectNodeId = await getProjectNodeIdFromUrl(projectUrl, GH_TOKEN);
+  } catch (err) {
+    console.error("Failed to fetch projectNodeId:", err.message);
+    process.exit(1);
+  }
+
+  const { owner, repo, number } = parseGitHubUrl(epicUrl);
+  const stats = await gatherStats(owner, repo, number, projectNodeId); // pass projectNodeId to allow filtering
   showProgress(stats);
 })();
